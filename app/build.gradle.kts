@@ -15,7 +15,6 @@
  */
 
 import java.io.ByteArrayOutputStream
-import java.io.File
 
 plugins {
     alias(libs.plugins.agp.application)
@@ -225,6 +224,7 @@ dependencies {
     implementation(libs.androidx.core.splashscreen)
     implementation(libs.androidx.emoji2)
     implementation(libs.androidx.emoji2.views)
+    implementation(libs.androidx.exifinterface)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.profileinstaller)
     ksp(libs.androidx.room.compiler)
@@ -249,6 +249,8 @@ dependencies {
     implementation(libs.accompanist.permissions)
 
 
+
+    implementation(project(":lib:kotlin"))
 
     testImplementation(libs.equalsverifier)
     testImplementation(libs.kotest.assertions.core)
