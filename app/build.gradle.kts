@@ -207,6 +207,9 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
     }
 }
 
+val cameraXVersion = "1.3.1"
+val accompanistVersion = "0.31.2-alpha"
+
 dependencies {
     implementation(libs.accompanist.systemuicontroller)
     implementation(libs.androidx.activity.compose)
@@ -235,6 +238,17 @@ dependencies {
     implementation(libs.patrickgold.jetpref.datastore.model)
     implementation(libs.patrickgold.jetpref.datastore.ui)
     implementation(libs.patrickgold.jetpref.material.ui)
+
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+    implementation(libs.androidx.camera.extensions)
+
+    implementation(libs.tasks.vision)
+
+    implementation(libs.accompanist.permissions)
+
+
 
     testImplementation(libs.equalsverifier)
     testImplementation(libs.kotest.assertions.core)

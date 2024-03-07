@@ -17,7 +17,12 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Permission needed to vibrate if the user has key press vibration enabled -->
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="true" />
+
     <uses-permission android:name="android.permission.VIBRATE"/>
+    <uses-permission android:name="android.permission.CAMERA" />
 
     <!-- Android 11+ only: Define that FlorisBoard requests to see all apps that
           ship with an IME or Spell Check service. This is used to guide the user
