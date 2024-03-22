@@ -9,7 +9,7 @@
       android:strokeLineJoin="round"
       android:fillType="evenOdd">
     <aapt:attr name="android:fillColor">
-      <gradient 
+      <gradient
           android:gradientRadius="20.594"
           android:centerX="54.142"
           android:centerY="48.769"
@@ -24,7 +24,7 @@
       android:strokeLineJoin="round"
       android:fillType="evenOdd">
     <aapt:attr name="android:fillColor">
-      <gradient 
+      <gradient
           android:gradientRadius="20.594"
           android:centerX="54.142"
           android:centerY="48.769"
@@ -39,7 +39,7 @@
       android:strokeLineJoin="round"
       android:fillType="evenOdd">
     <aapt:attr name="android:fillColor">
-      <gradient 
+      <gradient
           android:gradientRadius="12.849"
           android:centerX="54.03"
           android:centerY="39.144"
@@ -54,7 +54,7 @@
       android:strokeLineJoin="round"
       android:fillType="evenOdd">
     <aapt:attr name="android:fillColor">
-      <gradient 
+      <gradient
           android:gradientRadius="20.594"
           android:centerX="54.142"
           android:centerY="48.769"
@@ -69,7 +69,7 @@
       android:strokeLineJoin="round"
       android:fillType="evenOdd">
     <aapt:attr name="android:fillColor">
-      <gradient 
+      <gradient
           android:gradientRadius="17.913"
           android:centerX="54.131"
           android:centerY="49.819"
