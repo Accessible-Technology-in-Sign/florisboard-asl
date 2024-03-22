@@ -33,10 +33,10 @@ android {
     }
 
     defaultConfig {
-        minSdk = 24
+        minSdk = 34
         targetSdk = 34
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         sourceSets {
             maybeCreate("main").apply {

@@ -18,19 +18,38 @@ package dev.patrickgold.florisboard.ime.text.keyboard
 
 import android.animation.ValueAnimator
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Matrix
+import android.graphics.Paint
+import android.os.SystemClock
+import android.util.AttributeSet
+import android.util.Log
 import android.view.MotionEvent
+import android.view.View
+import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.animation.AccelerateInterpolator
+import android.widget.LinearLayout
+import androidx.camera.core.AspectRatio
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProxy
+import androidx.camera.view.LifecycleCameraController
+import androidx.camera.view.PreviewView
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.material.Icon
+import androidx.compose.material.Scaffold
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -50,18 +69,36 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.ContentDrawScope
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.toSize
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.zIndex
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.LifecycleOwner
+import com.google.accompanist.permissions.ExperimentalPermissionsApi
+import com.google.accompanist.permissions.PermissionState
+import com.google.accompanist.permissions.isGranted
+import com.google.accompanist.permissions.rememberPermissionState
+import com.google.accompanist.permissions.shouldShowRationale
+import com.google.mediapipe.framework.image.BitmapImageBuilder
+import com.google.mediapipe.framework.image.MPImage
+import com.google.mediapipe.tasks.core.BaseOptions
+import com.google.mediapipe.tasks.vision.core.RunningMode
+import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
+import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerResult
 import dev.patrickgold.florisboard.FlorisImeService
+import dev.patrickgold.florisboard.R
 import dev.patrickgold.florisboard.app.florisPreferenceModel
 import dev.patrickgold.florisboard.editorInstance
 import dev.patrickgold.florisboard.glideTypingManager
@@ -100,10 +137,15 @@ import dev.patrickgold.jetpref.datastore.model.observeAsState
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.onFailure
 import kotlinx.coroutines.isActive
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import kotlin.math.abs
+import kotlin.math.max
 import kotlin.math.sqrt
 
-@OptIn(ExperimentalComposeUiApi::class)
+private const val MP_HAND_LANDMARKER_TASK = "hand_landmarker.task"
+
+@OptIn(ExperimentalComposeUiApi::class, ExperimentalPermissionsApi::class)
 @Composable
 fun TextKeyboardLayout(
     modifier: Modifier = Modifier,
@@ -159,163 +201,253 @@ fun TextKeyboardLayout(
         onPause = { resetAllKeys() },
     )
 
-    BoxWithConstraints(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(
-                if (isSmartbarKeyboard) {
-                    FlorisImeSizing.smartbarHeight
-                } else {
-                    FlorisImeSizing.keyboardUiHeight()
+    //
+    Box {
+        Box(
+            modifier = modifier
+                .fillMaxWidth()
+                .zIndex(1f)
+        ) {
+            val context = LocalContext.current
+            val lifecycleOwner: LifecycleOwner = LocalLifecycleOwner.current
+            val cameraController: LifecycleCameraController = remember { LifecycleCameraController(context) }
+
+            var backgroundExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+
+            val baseOptionsBuilder = BaseOptions.builder().setModelAssetPath(MP_HAND_LANDMARKER_TASK)
+            val baseOptions = baseOptionsBuilder.build()
+
+            val overlay = OverlayView(LocalContext.current, null)
+
+            fun handleLivestreamResult(handLandmarkerResult: HandLandmarkerResult?, mpImage: MPImage?) {
+                handLandmarkerResult?.let {
+                    overlay.setResults(it, 240, 340)
                 }
-            )
-            .onGloballyPositioned { coords ->
-                controller.size = coords.size.toSize()
             }
-            .pointerInteropFilter { event ->
-                if (isPreview) return@pointerInteropFilter false
-                when (event.actionMasked) {
-                    MotionEvent.ACTION_DOWN,
-                    MotionEvent.ACTION_POINTER_DOWN,
-                    MotionEvent.ACTION_MOVE,
-                    MotionEvent.ACTION_POINTER_UP,
-                    MotionEvent.ACTION_UP,
-                    MotionEvent.ACTION_CANCEL
-                    -> {
-                        val clonedEvent = MotionEvent.obtainNoHistory(event)
-                        touchEventChannel
-                            .trySend(clonedEvent)
-                            .onFailure {
-                                // Make sure to prevent MotionEvent memory leakage
-                                // in case the input channel is full
-                                clonedEvent.recycle()
+
+            val optionsBuilder =
+                HandLandmarker.HandLandmarkerOptions.builder()
+                    .setBaseOptions(baseOptions)
+                    .setMinHandDetectionConfidence(0.5f)
+                    .setMinTrackingConfidence(0.5f)
+                    .setMinHandPresenceConfidence(0.5f)
+                    .setNumHands(1)
+                    .setResultListener(::handleLivestreamResult)
+                    .setRunningMode(RunningMode.LIVE_STREAM)
+
+            val options = optionsBuilder.build()
+
+            val handLandmarker =
+                HandLandmarker.createFromOptions(context, options)
+
+            // https://medium.com/tech-takeaways/how-to-use-camerax-with-android-jetpack-compose-38a236e209a3
+            Scaffold(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(FlorisImeSizing.keyboardUiHeight())
+            ) { innerPadding: PaddingValues ->
+                AndroidView(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(FlorisImeSizing.keyboardUiHeight())
+                        .padding(innerPadding)
+                        .zIndex(1f),
+                    factory = { context ->
+                        PreviewView(context).apply {
+                            alpha = 0.5f
+                            setBackgroundColor(Color.White.toArgb())
+                            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+                            scaleType = PreviewView.ScaleType.FILL_START
+                            implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+                        }.also { previewView ->
+                            previewView.controller = cameraController
+                            cameraController.cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
+                            cameraController.setImageAnalysisAnalyzer(backgroundExecutor) { image ->
+                                detectHand(handLandmarker, image)
                             }
-                        return@pointerInteropFilter true
+                            cameraController.bindToLifecycle(lifecycleOwner)
+                        }
+                    },
+                    onRelease = {
+                        cameraController.unbind()
                     }
-                }
-                return@pointerInteropFilter false
-            }
-            .drawWithContent {
-                drawContent()
-                if (glideEnabled && glideShowTrail && !isSmartbarKeyboard) {
-                    val targetDist = 3.0f
-                    val radius = 20.0f
+                )
 
-                    val radiusReductionFactor = 0.99f
-                    if (controller.fadingGlideRadius > 0) {
-                        controller.drawGlideTrail(
-                            this,
-                            controller.fadingGlide,
-                            targetDist,
-                            controller.fadingGlideRadius,
-                            radiusReductionFactor,
-                            glideTrailColor,
-                        )
+                AndroidView(
+                    modifier = modifier
+                        .fillMaxWidth()
+                        .height(FlorisImeSizing.keyboardUiHeight())
+                        .zIndex(2f),
+                    factory = {
+                        overlay
                     }
-                    if (controller.isGliding && controller.glideDataForDrawing.isNotEmpty()) {
-                        controller.drawGlideTrail(
-                            this, controller.glideDataForDrawing, targetDist, radius,
-                            radiusReductionFactor, glideTrailColor,
-                        )
-                    }
-                }
-            },
-    ) {
-        val keyMarginH by prefs.keyboard.keySpacingHorizontal.observeAsTransformingState { it.dp.toPx() }
-        val keyMarginV by prefs.keyboard.keySpacingVertical.observeAsTransformingState { it.dp.toPx() }
-        val desiredKey = remember { TextKey(data = TextKeyData.UNSPECIFIED) }
-        val keyboardWidth = constraints.maxWidth.toFloat()
-        val keyboardHeight = constraints.maxHeight.toFloat()
-        desiredKey.touchBounds.apply {
-            if (isSmartbarKeyboard) {
-                width = keyboardWidth / 8f
-                height = FlorisImeSizing.smartbarHeight.toPx()
-            } else {
-                width = keyboardWidth / 10f
-                height = when (keyboard.mode) {
-                    KeyboardMode.CHARACTERS,
-                    KeyboardMode.NUMERIC_ADVANCED,
-                    KeyboardMode.SYMBOLS,
-                    KeyboardMode.SYMBOLS2 -> {
-                        (FlorisImeSizing.keyboardUiHeight() / keyboard.rowCount)
-                            .coerceAtMost(FlorisImeSizing.keyboardRowBaseHeight * 1.12f).toPx()
-                    }
-                    else -> FlorisImeSizing.keyboardRowBaseHeight.toPx()
-                }
+                )
             }
         }
-        desiredKey.visibleBounds.applyFrom(desiredKey.touchBounds).deflateBy(keyMarginH, keyMarginV)
-        keyboard.layout(keyboardWidth, keyboardHeight, desiredKey, !isSmartbarKeyboard)
 
-        val fontSizeMultiplier = prefs.keyboard.fontSizeMultiplier()
-        val popupUiController = rememberPopupUiController(
-            key1 = keyboard,
-            boundsProvider = { key ->
-                val keyPopupWidth: Float
-                val keyPopupHeight: Float
-                when {
-                    configuration.isOrientationLandscape() -> {
-                        if (isSmartbarKeyboard) {
-                            keyPopupWidth = key.visibleBounds.width * 1.0f
-                            keyPopupHeight = desiredKey.visibleBounds.height * 3.0f * 1.2f
-                        } else {
-                            keyPopupWidth = desiredKey.visibleBounds.width * 1.0f
-                            keyPopupHeight = desiredKey.visibleBounds.height * 3.0f
+        // Original, unmodified keyboard code. The only change below is to add the z-index property of 2.0f,
+        // so that the keyboard appears above the camera preview.
+        BoxWithConstraints(
+            modifier = modifier
+                .fillMaxWidth()
+                .height(
+                    if (isSmartbarKeyboard) {
+                        FlorisImeSizing.smartbarHeight
+                    } else {
+                        FlorisImeSizing.keyboardUiHeight()
+                    }
+                )
+                .onGloballyPositioned { coords ->
+                    controller.size = coords.size.toSize()
+                }
+                .pointerInteropFilter { event ->
+                    if (isPreview) return@pointerInteropFilter false
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN,
+                        MotionEvent.ACTION_POINTER_DOWN,
+                        MotionEvent.ACTION_MOVE,
+                        MotionEvent.ACTION_POINTER_UP,
+                        MotionEvent.ACTION_UP,
+                        MotionEvent.ACTION_CANCEL
+                        -> {
+                            val clonedEvent = MotionEvent.obtainNoHistory(event)
+                            touchEventChannel
+                                .trySend(clonedEvent)
+                                .onFailure {
+                                    // Make sure to prevent MotionEvent memory leakage
+                                    // in case the input channel is full
+                                    clonedEvent.recycle()
+                                }
+                            return@pointerInteropFilter true
                         }
                     }
-                    else -> {
-                        if (isSmartbarKeyboard) {
-                            keyPopupWidth = key.visibleBounds.width * 1.1f
-                            keyPopupHeight = desiredKey.visibleBounds.height * 2.5f * 1.2f
-                        } else {
-                            keyPopupWidth = desiredKey.visibleBounds.width * 1.1f
-                            keyPopupHeight = desiredKey.visibleBounds.height * 2.5f
+                    return@pointerInteropFilter false
+                }
+                .drawWithContent {
+                    drawContent()
+                    if (glideEnabled && glideShowTrail && !isSmartbarKeyboard) {
+                        val targetDist = 3.0f
+                        val radius = 20.0f
+
+                        val radiusReductionFactor = 0.99f
+                        if (controller.fadingGlideRadius > 0) {
+                            controller.drawGlideTrail(
+                                this,
+                                controller.fadingGlide,
+                                targetDist,
+                                controller.fadingGlideRadius,
+                                radiusReductionFactor,
+                                glideTrailColor,
+                            )
+                        }
+                        if (controller.isGliding && controller.glideDataForDrawing.isNotEmpty()) {
+                            controller.drawGlideTrail(
+                                this, controller.glideDataForDrawing, targetDist, radius,
+                                radiusReductionFactor, glideTrailColor,
+                            )
                         }
                     }
                 }
-                val keyPopupDiffX = (key.visibleBounds.width - keyPopupWidth) / 2.0f
-                FlorisRect.new().apply {
-                    left = key.visibleBounds.left + keyPopupDiffX
-                    top = key.visibleBounds.bottom - keyPopupHeight
-                    right = left + keyPopupWidth
-                    bottom = top + keyPopupHeight
-                }
-            },
-            isSuitableForBasicPopup = { key ->
-                if (key is TextKey) {
-                    val keyCode = key.computedData.code
-                    val keyType = key.computedData.type
-                    val numeric = keyboard.mode == KeyboardMode.NUMERIC ||
-                        keyboard.mode == KeyboardMode.PHONE || keyboard.mode == KeyboardMode.PHONE2 ||
-                        keyboard.mode == KeyboardMode.NUMERIC_ADVANCED && keyType == KeyType.NUMERIC
-                    keyCode > KeyCode.SPACE && keyCode != KeyCode.MULTIPLE_CODE_POINTS && keyCode != KeyCode.CJK_SPACE && !numeric
+                .zIndex(2f),
+        ) {
+            val keyMarginH by prefs.keyboard.keySpacingHorizontal.observeAsTransformingState { it.dp.toPx() }
+            val keyMarginV by prefs.keyboard.keySpacingVertical.observeAsTransformingState { it.dp.toPx() }
+            val desiredKey = remember { TextKey(data = TextKeyData.UNSPECIFIED) }
+            val keyboardWidth = constraints.maxWidth.toFloat()
+            val keyboardHeight = constraints.maxHeight.toFloat()
+            desiredKey.touchBounds.apply {
+                if (isSmartbarKeyboard) {
+                    width = keyboardWidth / 8f
+                    height = FlorisImeSizing.smartbarHeight.toPx()
                 } else {
-                    true
+                    width = keyboardWidth / 10f
+                    height = when (keyboard.mode) {
+                        KeyboardMode.CHARACTERS,
+                        KeyboardMode.NUMERIC_ADVANCED,
+                        KeyboardMode.SYMBOLS,
+                        KeyboardMode.SYMBOLS2 -> {
+                            (FlorisImeSizing.keyboardUiHeight() / keyboard.rowCount)
+                                .coerceAtMost(FlorisImeSizing.keyboardRowBaseHeight * 1.12f).toPx()
+                        }
+                        else -> FlorisImeSizing.keyboardRowBaseHeight.toPx()
+                    }
                 }
-            },
-            isSuitableForExtendedPopup = { key ->
-                if (key is TextKey) {
-                    val keyCode = key.computedData.code
-                    keyCode > KeyCode.SPACE && keyCode != KeyCode.MULTIPLE_CODE_POINTS && keyCode != KeyCode.CJK_SPACE || ExceptionsForKeyCodes.contains(keyCode)
-                } else {
-                    true
-                }
-            },
-        )
-        popupUiController.evaluator = evaluator
-        popupUiController.fontSizeMultiplier = fontSizeMultiplier
-        popupUiController.keyHintConfiguration = prefs.keyboard.keyHintConfiguration()
-        controller.popupUiController = popupUiController
-        val debugShowTouchBoundaries by prefs.devtools.showKeyTouchBoundaries.observeAsState()
-        for (textKey in keyboard.keys()) {
-            TextKeyButton(
-                textKey, evaluator, fontSizeMultiplier, isSmartbarKeyboard,
-                debugShowTouchBoundaries,
+            }
+            desiredKey.visibleBounds.applyFrom(desiredKey.touchBounds).deflateBy(keyMarginH, keyMarginV)
+            keyboard.layout(keyboardWidth, keyboardHeight, desiredKey, !isSmartbarKeyboard)
+
+            val fontSizeMultiplier = prefs.keyboard.fontSizeMultiplier()
+            val popupUiController = rememberPopupUiController(
+                key1 = keyboard,
+                boundsProvider = { key ->
+                    val keyPopupWidth: Float
+                    val keyPopupHeight: Float
+                    when {
+                        configuration.isOrientationLandscape() -> {
+                            if (isSmartbarKeyboard) {
+                                keyPopupWidth = key.visibleBounds.width * 1.0f
+                                keyPopupHeight = desiredKey.visibleBounds.height * 3.0f * 1.2f
+                            } else {
+                                keyPopupWidth = desiredKey.visibleBounds.width * 1.0f
+                                keyPopupHeight = desiredKey.visibleBounds.height * 3.0f
+                            }
+                        }
+                        else -> {
+                            if (isSmartbarKeyboard) {
+                                keyPopupWidth = key.visibleBounds.width * 1.1f
+                                keyPopupHeight = desiredKey.visibleBounds.height * 2.5f * 1.2f
+                            } else {
+                                keyPopupWidth = desiredKey.visibleBounds.width * 1.1f
+                                keyPopupHeight = desiredKey.visibleBounds.height * 2.5f
+                            }
+                        }
+                    }
+                    val keyPopupDiffX = (key.visibleBounds.width - keyPopupWidth) / 2.0f
+                    FlorisRect.new().apply {
+                        left = key.visibleBounds.left + keyPopupDiffX
+                        top = key.visibleBounds.bottom - keyPopupHeight
+                        right = left + keyPopupWidth
+                        bottom = top + keyPopupHeight
+                    }
+                },
+                isSuitableForBasicPopup = { key ->
+                    if (key is TextKey) {
+                        val c = key.computedData.code
+                        val t = key.computedData.type
+                        val numeric = keyboard.mode == KeyboardMode.NUMERIC ||
+                            keyboard.mode == KeyboardMode.PHONE || keyboard.mode == KeyboardMode.PHONE2 ||
+                            keyboard.mode == KeyboardMode.NUMERIC_ADVANCED && t == KeyType.NUMERIC
+                        c > KeyCode.SPACE && c != KeyCode.MULTIPLE_CODE_POINTS && c != KeyCode.CJK_SPACE && !numeric
+                    } else {
+                        true
+                    }
+                },
+                isSuitableForExtendedPopup = { key ->
+                    if (key is TextKey) {
+                        val c = key.computedData.code
+                        c > KeyCode.SPACE && c != KeyCode.MULTIPLE_CODE_POINTS && c != KeyCode.CJK_SPACE || ExceptionsForKeyCodes.contains(c)
+                    } else {
+                        true
+                    }
+                },
             )
-        }
+            popupUiController.evaluator = evaluator
+            popupUiController.fontSizeMultiplier = fontSizeMultiplier
+            popupUiController.keyHintConfiguration = prefs.keyboard.keyHintConfiguration()
+            controller.popupUiController = popupUiController
+            val debugShowTouchBoundaries by prefs.devtools.showKeyTouchBoundaries.observeAsState()
+            for (textKey in keyboard.keys()) {
+                TextKeyButton(
+                    textKey, evaluator, fontSizeMultiplier, isSmartbarKeyboard,
+                    debugShowTouchBoundaries,
+                )
+            }
 
-        popupUiController.RenderPopups()
+            popupUiController.RenderPopups()
+        }
     }
+
+
 
     LaunchedEffect(Unit) {
         for (event in touchEventChannel) {
@@ -323,6 +455,119 @@ fun TextKeyboardLayout(
             controller.onTouchEventInternal(event)
             event.recycle()
         }
+    }
+}
+
+fun detectHand(landmarker: HandLandmarker, image: ImageProxy) {
+    val frameTime = SystemClock.uptimeMillis()
+
+    // Copy out RGB bits from the frame to a bitmap buffer
+    val bitmapBuffer: Bitmap
+
+    image.use { bitmapBuffer = it.toBitmap() }
+    image.close()
+
+    val matrix = Matrix().apply {
+        // Rotate the frame received from the camera to be in the same direction as it'll be shown
+        postRotate(image.imageInfo.rotationDegrees.toFloat())
+
+        // flip image if user use front camera
+        postScale(
+            -1f,
+            1f,
+            image.width.toFloat(),
+            image.height.toFloat()
+        )
+    }
+    val rotatedBitmap = Bitmap.createBitmap(
+        bitmapBuffer, 0, 0, bitmapBuffer.width, bitmapBuffer.height,
+        matrix, true
+    )
+
+    // Convert the input Bitmap object to an MPImage object to run inference
+    val mpImage = BitmapImageBuilder(rotatedBitmap).build()
+
+    landmarker.detectAsync(mpImage, frameTime)
+}
+
+class OverlayView(context: Context?, attrs: AttributeSet?) :
+    View(context, attrs) {
+
+    private var results: HandLandmarkerResult? = null
+    private var linePaint = Paint()
+    private var pointPaint = Paint()
+
+    private var scaleFactor: Float = 1f
+    private var imageWidth: Int = 1
+    private var imageHeight: Int = 1
+
+    init {
+        initPaints()
+    }
+
+    fun clear() {
+        results = null
+        linePaint.reset()
+        pointPaint.reset()
+        invalidate()
+        initPaints()
+    }
+
+    private fun initPaints() {
+        linePaint.color = Color.White.toArgb()
+        linePaint.strokeWidth = LANDMARK_STROKE_WIDTH
+        linePaint.style = Paint.Style.STROKE
+
+        pointPaint.color = Color.Yellow.toArgb()
+        pointPaint.strokeWidth = LANDMARK_STROKE_WIDTH
+        pointPaint.style = Paint.Style.FILL
+    }
+
+    override fun draw(canvas: Canvas) {
+        super.draw(canvas)
+        results?.let { handLandmarkerResult ->
+            for (landmark in handLandmarkerResult.landmarks()) {
+                for (normalizedLandmark in landmark) {
+                    canvas.drawPoint(
+                        normalizedLandmark.x() * imageWidth * scaleFactor,
+                        normalizedLandmark.y() * imageHeight * scaleFactor,
+                        pointPaint
+                    )
+                }
+
+                HandLandmarker.HAND_CONNECTIONS.forEach {
+                    canvas.drawLine(
+                        handLandmarkerResult.landmarks().get(0).get(it!!.start())
+                            .x() * imageWidth * scaleFactor,
+                        handLandmarkerResult.landmarks().get(0).get(it.start())
+                            .y() * imageHeight * scaleFactor,
+                        handLandmarkerResult.landmarks().get(0).get(it.end())
+                            .x() * imageWidth * scaleFactor,
+                        handLandmarkerResult.landmarks().get(0).get(it.end())
+                            .y() * imageHeight * scaleFactor,
+                        linePaint
+                    )
+                }
+            }
+        }
+    }
+
+    fun setResults(
+        handLandmarkerResults: HandLandmarkerResult,
+        imageHeight: Int,
+        imageWidth: Int
+    ) {
+        results = handLandmarkerResults
+
+        this.imageHeight = imageHeight
+        this.imageWidth = imageWidth
+
+        scaleFactor = max(width * 1f / imageWidth, height * 1f / imageHeight)
+        invalidate()
+    }
+
+    companion object {
+        private const val LANDMARK_STROKE_WIDTH = 8F
     }
 }
 
